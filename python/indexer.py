@@ -2,10 +2,27 @@
 import argparse
 import json
 import sys
-from typing import Dict, List
+from typing import Dict, List, Any
 
 import chromadb
 from sentence_transformers import SentenceTransformer
+
+def process_request(req: str, model: SentenceTransformer, db_path="../chroma") -> Dict[str, Any]:
+    try:
+        input_data = json.loads(req)
+        chunks = input_data.get("chunks", [])
+
+        if chunks:
+            result = index_chunks(chunks, model, db_path)
+        else:
+            result = {"status": "error", "message": "No chunks provided"}
+
+    except json.JSONDecodeError as e:
+        result = {"status": "error", "message": f"Invalid JSON: {str(e)}"}
+    except Exception as e:
+        result = {"status": "error", "message": str(e)}
+
+    return result
 
 
 def index_chunks(chunks: List[Dict[str, str]], model: SentenceTransformer, db_path="../chroma"):
@@ -48,24 +65,19 @@ def main():
     model_name = "all-MiniLM-L6-v2"
     model = SentenceTransformer(model_name)
 
-    result_code = 0
-    try:
-        input_data = json.load(sys.stdin)
-        chunks = input_data.get("chunks", [])
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            break
 
-        if chunks:
-            result = index_chunks(chunks, model, db_path=args.db_path)
-        else:
-            result = {"status": "error", "message": "No chunks provided"}
+        request = line.strip()
+        if not request or request == "exit":
+            break
 
-    except json.JSONDecodeError as e:
-        result = {"status": "error", "message": f"Invalid JSON: {str(e)}"}
+        result = process_request(request, model, db_path=args.db_path)
 
-    except Exception as e:
-        result = {"status": "error", "message": str(e)}
-
-    print(json.dumps(result))
-    sys.exit(result_code)
+        print(json.dumps(result))
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":

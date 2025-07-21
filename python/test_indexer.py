@@ -28,7 +28,7 @@ def run_indexer(input_data: List[Dict[str, str]], db_path: str):
 
     result = subprocess.run(
         ["uv", "run", "indexer.py", "--db-path=" + db_path],
-        input=json_input,
+        input=json_input + "\nexit\n",
         text=True,
         capture_output=True
     )
