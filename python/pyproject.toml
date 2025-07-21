@@ -1,0 +1,16 @@
+[project]
+name = "my-memory"
+version = "0.1.0"
+description = "Scripts for my memory project"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "chromadb>=1.0.15",
+    "sentence-transformers>=5.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+    "pytest-describe>=2.2.0",
+]
