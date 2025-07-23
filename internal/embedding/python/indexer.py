@@ -7,7 +7,7 @@ from typing import Dict, List, Any
 import chromadb
 from sentence_transformers import SentenceTransformer
 
-def process_request(req: str, model: SentenceTransformer, db_path="../chroma") -> Dict[str, Any]:
+def process_request(req: str, model: SentenceTransformer, db_path: str) -> Dict[str, Any]:
     try:
         input_data = json.loads(req)
         chunks = input_data.get("chunks", [])
@@ -25,7 +25,8 @@ def process_request(req: str, model: SentenceTransformer, db_path="../chroma") -
     return result
 
 
-def index_chunks(chunks: List[Dict[str, str]], model: SentenceTransformer, db_path="../chroma"):
+def index_chunks(chunks: List[Dict[str, str]], model: SentenceTransformer, db_path: str):
+    print("DB PATH: ", db_path)
     client = chromadb.PersistentClient(path=db_path)
 
     collection = client.get_or_create_collection(
@@ -62,6 +63,8 @@ def main():
         help="Path to ChromaDB database (default: ./chroma_db)"
     )
     args = parser.parse_args()
+
+    print("db path: ", args.db_path)
 
     model_name = "all-MiniLM-L6-v2"
     model = SentenceTransformer(model_name)

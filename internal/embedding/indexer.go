@@ -5,12 +5,15 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"github.com/a-peyrard/mm/internal/code"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 const (
@@ -48,7 +51,7 @@ func WithWorkingDirectory(wd string) func(*IndexerOptions) {
 	}
 }
 
-func RunIndexer(ctx context.Context, opts ...IndexerOption) error {
+func RunIndexer(ctx context.Context, chunks []code.Chunk, opts ...IndexerOption) error {
 	logger := zerolog.Ctx(ctx)
 
 	options := buildOptions(opts...)
@@ -65,17 +68,40 @@ func RunIndexer(ctx context.Context, opts ...IndexerOption) error {
 		"python",
 		"indexer.py",
 	}
-	cmdTokens = append(cmdTokens, buildIndexerCmdArgs(options)...)
+	cmdTokens = append(cmdTokens, buildIndexerCmdArgs(wd)...)
 
 	cmd := exec.CommandContext(ctx, "uv", cmdTokens...)
 	cmd.Dir = filepath.Join(wd, libDirectoryName)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to create stdin pipe for indexer command")
+		return fmt.Errorf("failed to create stdin pipe for indexer command: %w", err)
+	}
 
 	log.Info().Msg("running indexer")
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("indexer failed: %w", err)
 	}
+	defer cmd.Process.Kill()
+
+	toProcess := map[string]any{
+		"chunks": chunks,
+	}
+	bytes, err := json.Marshal(toProcess)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to marshal chunks")
+		return fmt.Errorf("failed to marshal chunks: %w", err)
+	}
+	_, _ = fmt.Fprintln(stdin, string(bytes))
+
+	// fixme we need to do this properly, this is supposed to be a daemon, we should not give the chunks
+	//   we should probably create a daemon struct with methods like "start", "stop", "processChunk", etc.
+	time.Sleep(5 * time.Second)
+
+	// fixme: again, do this properly!
+	_ = stdin.Close()
 
 	log.Info().Msg("Indexer completed successfully")
 	return nil
@@ -107,13 +133,6 @@ func prepareWorkingDirectoryIfNeeded(ctx context.Context, wd string) error {
 		requiresUpdate(pyprojectTomlPath, computeChecksum(pyprojectToml)) {
 		log.Debug().Msg("updating python script")
 
-		_ = os.RemoveAll(filepath.Join(wd, libDirectoryName))
-		err = ensurePathExists(filepath.Join(wd, libDirectoryName))
-		if err != nil {
-			logger.Error().Err(err).Msg("failed to ensure lib directory exists")
-			return fmt.Errorf("failed to ensure lib directory exists %w", err)
-		}
-
 		err = os.WriteFile(pythonScriptPath, pythonScript, 0644)
 		if err != nil {
 			logger.Error().Err(err).Msg("failed to write python script")
@@ -139,13 +158,11 @@ func prepareWorkingDirectoryIfNeeded(ctx context.Context, wd string) error {
 	return nil
 }
 
-func buildIndexerCmdArgs(options *IndexerOptions) []string {
-	var args []string
-	if options.WorkingDirectory != "" {
-		args = append(args, "--db-path", options.WorkingDirectory)
+func buildIndexerCmdArgs(wd string) []string {
+	return []string{
+		"--db-path",
+		filepath.Join(wd, chromaDirectoryName),
 	}
-
-	return args
 }
 
 func ensurePathExists(path string) error {

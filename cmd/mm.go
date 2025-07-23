@@ -3,6 +3,7 @@ package main
 import (
 	_ "embed"
 	"fmt"
+	"github.com/a-peyrard/mm/internal/code"
 	"github.com/a-peyrard/mm/internal/embedding"
 	"io"
 	"os"
@@ -32,7 +33,17 @@ var mmCmd = &cobra.Command{
 		ctx := logger.WithContext(cmd.Context())
 
 		if index {
-			return embedding.RunIndexer(ctx)
+			filePath := args[0]
+			content, err := os.ReadFile(filePath)
+			if err != nil {
+				return fmt.Errorf("failed to read file %s: %w", filePath, err)
+			}
+			chunks, err := code.NewGenericParser().ParseFile(filePath, content)
+			if err != nil {
+				return fmt.Errorf("failed to parse file %s: %w", filePath, err)
+			}
+
+			return embedding.RunIndexer(ctx, chunks)
 		}
 
 		return nil
