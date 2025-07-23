@@ -54,6 +54,7 @@ def index_chunks(chunks: List[Dict[str, str]], model: SentenceTransformer, db_pa
 
 
 def main():
+    print("Starting indexer...")
     parser = argparse.ArgumentParser(description="Index code chunks in ChromaDB")
     parser.add_argument(
         "--db-path",
