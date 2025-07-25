@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 	"github.com/a-peyrard/mm/internal/code"
 	"github.com/a-peyrard/mm/internal/embedding"
 	"github.com/a-peyrard/mm/internal/set"
+	"github.com/a-peyrard/mm/internal/worker"
 	"io"
 	"os"
 	"time"
@@ -34,55 +36,77 @@ var mmCmd = &cobra.Command{
 		ctx := logger.WithContext(cmd.Context())
 
 		if index {
-			// create the embedding indexer
-			indexer, err := embedding.RunIndexer(ctx)
+			workerGroup, err := worker.NewGroup(ctx, 4, NewIndexerWorker)
 			if err != nil {
-				return fmt.Errorf("failed to run indexer: %w", err)
+				return fmt.Errorf("failed to create worker group: %w", err)
 			}
-			//goland:noinspection GoUnhandledErrorResult
-			defer indexer.Close()
-
-			go func() {
-				logger := logger.With().Str("process", "python indexer").Logger()
-				for out := range indexer.Output() {
-					logger.Debug().Msg(out)
-				}
-			}()
 
 			// look for Python files in the provided directory
 			path := args[0]
 			err = code.FindInDirectory(
 				path,
 				set.Of(".py"),
-				func(filePath string) error {
-					log.Debug().Str("path", filePath).Msg("Processing file")
-					content, err := os.ReadFile(filePath)
-					if err != nil {
-						return fmt.Errorf("failed to read file %s: %w", filePath, err)
-					}
-
-					chunks, err := code.NewGenericParser().ParseFile(filePath, content)
-					if err != nil {
-						return fmt.Errorf("failed to parse file %s: %w", filePath, err)
-					}
-
-					err = indexer.ProcessChunk(chunks)
-					if err != nil {
-						return fmt.Errorf("failed to process chunk: %w", err)
-					}
-
-					return nil
-				},
+				workerGroup.Submit,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to find files in directory %s: %w", path, err)
 			}
 
-			indexer.WaitForCompletion()
+			_ = workerGroup.WaitAndClose()
 		}
 
 		return nil
 	},
+}
+
+type indexerWorker struct {
+	indexer *embedding.RunningIndexer
+}
+
+func NewIndexerWorker(ctx context.Context, workerIdx int) (worker.Worker[string], error) {
+	logger := zerolog.Ctx(ctx).
+		With().
+		Str("process", "python indexer").
+		Int("workerIdx", workerIdx).
+		Logger()
+
+	// create the embedding indexer
+	indexer, err := embedding.RunIndexer(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to run indexer: %w", err)
+	}
+	go func() {
+		for out := range indexer.Output() {
+			logger.Debug().Msg(out)
+		}
+	}()
+
+	return &indexerWorker{indexer}, nil
+}
+
+func (i *indexerWorker) Handle(_ context.Context, filePath string) error {
+	log.Debug().Str("path", filePath).Msg("Processing file")
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read file %s: %w", filePath, err)
+	}
+
+	chunks, err := code.NewGenericParser().ParseFile(filePath, content)
+	if err != nil {
+		return fmt.Errorf("failed to parse file %s: %w", filePath, err)
+	}
+	if len(chunks) > 0 {
+		err = i.indexer.ProcessChunk(chunks)
+		if err != nil {
+			return fmt.Errorf("failed to process chunk: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (i *indexerWorker) WaitAndClose() error {
+	return i.indexer.WaitAndClose()
 }
 
 func init() {
