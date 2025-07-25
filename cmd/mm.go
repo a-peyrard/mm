@@ -38,12 +38,32 @@ var mmCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("failed to read file %s: %w", filePath, err)
 			}
+
 			chunks, err := code.NewGenericParser().ParseFile(filePath, content)
 			if err != nil {
 				return fmt.Errorf("failed to parse file %s: %w", filePath, err)
 			}
 
-			return embedding.RunIndexer(ctx, chunks)
+			indexer, err := embedding.RunIndexer(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to run indexer: %w", err)
+			}
+			go func() {
+				logger := logger.With().Str("process", "python indexer").Logger()
+				for out := range indexer.Output() {
+					logger.Debug().Msg(out)
+				}
+			}()
+
+			err = indexer.ProcessChunk(chunks)
+			if err != nil {
+				return fmt.Errorf("failed to process chunk: %w", err)
+			}
+
+			err = indexer.WaitAndClose()
+			if err != nil {
+				return fmt.Errorf("failed to wait for indexer completion: %w", err)
+			}
 		}
 
 		return nil

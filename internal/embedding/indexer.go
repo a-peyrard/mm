@@ -1,19 +1,23 @@
 package embedding
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/a-peyrard/mm/internal/code"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"time"
+	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -33,17 +37,24 @@ type (
 	}
 
 	IndexerOption func(*IndexerOptions)
-)
 
-func buildOptions(opts ...IndexerOption) *IndexerOptions {
-	options := &IndexerOptions{
-		WorkingDirectory: "$HOME/.mm",
+	RunningIndexer struct {
+		ctx    context.Context
+		logger *zerolog.Logger
+
+		command *exec.Cmd
+
+		stdin io.WriteCloser
+
+		stdout io.ReadCloser
+		stderr io.ReadCloser
+
+		out          chan string
+		completionCh chan struct{}
+
+		pendingChunks *atomic.Int32
 	}
-	for _, opt := range opts {
-		opt(options)
-	}
-	return options
-}
+)
 
 func WithWorkingDirectory(wd string) func(*IndexerOptions) {
 	return func(opts *IndexerOptions) {
@@ -51,7 +62,7 @@ func WithWorkingDirectory(wd string) func(*IndexerOptions) {
 	}
 }
 
-func RunIndexer(ctx context.Context, chunks []code.Chunk, opts ...IndexerOption) error {
+func RunIndexer(ctx context.Context, opts ...IndexerOption) (*RunningIndexer, error) {
 	logger := zerolog.Ctx(ctx)
 
 	options := buildOptions(opts...)
@@ -60,7 +71,7 @@ func RunIndexer(ctx context.Context, chunks []code.Chunk, opts ...IndexerOption)
 	err := prepareWorkingDirectoryIfNeeded(ctx, os.ExpandEnv(wd))
 	if err != nil {
 		logger.Error().Err(err).Msg("failed to prepare working directory")
-		return fmt.Errorf("failed to prepare working directory: %w", err)
+		return nil, fmt.Errorf("failed to prepare working directory: %w", err)
 	}
 
 	cmdTokens := []string{
@@ -72,39 +83,222 @@ func RunIndexer(ctx context.Context, chunks []code.Chunk, opts ...IndexerOption)
 
 	cmd := exec.CommandContext(ctx, "uv", cmdTokens...)
 	cmd.Dir = filepath.Join(wd, libDirectoryName)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+
+	// Set up pipes for communication
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		logger.Error().Err(err).Msg("failed to create stdin pipe for indexer command")
-		return fmt.Errorf("failed to create stdin pipe for indexer command: %w", err)
+		return nil, fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
 
-	log.Info().Msg("running indexer")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
+	runningIndexer := initRunningIndexer(ctx, cmd, stdin, stdout, stderr)
+
+	logger.Info().Msg("running indexer sub-process")
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("indexer failed: %w", err)
+		_ = runningIndexer.Close()
+		return nil, fmt.Errorf("indexer failed: %w", err)
 	}
-	defer cmd.Process.Kill()
 
+	return runningIndexer, nil
+}
+
+func initRunningIndexer(ctx context.Context, cmd *exec.Cmd, stdin io.WriteCloser, stdout io.ReadCloser, stderr io.ReadCloser) *RunningIndexer {
+	logger := zerolog.Ctx(ctx)
+
+	out := captureOutput(ctx, stdout, stderr, logger)
+
+	completionCh := make(chan struct{})
+
+	pendingChunks := atomic.Int32{}
+	outWrapped := make(chan string)
+	go func() {
+		defer close(outWrapped)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case line, ok := <-out:
+				if !ok {
+					return
+				}
+
+				select {
+				case outWrapped <- line:
+				case <-ctx.Done():
+					return
+					// fixme: restore this or another mechanism to not hang if no-one is listening.
+					//   but if we put this, the listener is missing some of the logs
+					//default:
+					//	// maybe no one is reading the output, so we just drop it
+				}
+
+				if !strings.Contains(line, "status") {
+					continue
+				}
+
+				val := pendingChunks.Add(-1)
+				if val < 0 {
+					// don't want negative values, this counter is not precise science, we would need to
+					// identify the chunks sent with some unique ids, here we just assume that the indexer
+					// is always returning a single line per chunk processed
+					pendingChunks.CompareAndSwap(val, 0)
+				}
+
+				if val <= 0 {
+					select {
+					case completionCh <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}
+	}()
+
+	return &RunningIndexer{
+		ctx:    ctx,
+		logger: logger,
+
+		command: cmd,
+		stdin:   stdin,
+		stdout:  stdout,
+		stderr:  stderr,
+
+		out:          outWrapped,
+		completionCh: completionCh,
+
+		pendingChunks: &pendingChunks,
+	}
+}
+
+func captureOutput(ctx context.Context, stdout io.ReadCloser, stderr io.ReadCloser, logger *zerolog.Logger) chan string {
+	out := make(chan string)
+	wg := &sync.WaitGroup{}
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line != "" {
+				select {
+				case <-ctx.Done():
+					return
+				case out <- line:
+				}
+			}
+		}
+		if err := scanner.Err(); err != nil && !strings.Contains(err.Error(), "closed") {
+			logger.Error().Err(err).Msg("error reading stdout")
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line != "" {
+				select {
+				case <-ctx.Done():
+					return
+				case out <- line:
+				}
+			}
+		}
+		if err := scanner.Err(); err != nil && !strings.Contains(err.Error(), "closed") {
+			logger.Error().Err(err).Msg("error reading stderr")
+		}
+	}()
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	return out
+}
+
+func (i *RunningIndexer) Output() <-chan string {
+	return i.out
+}
+
+func (i *RunningIndexer) ProcessChunk(chunks []code.Chunk) error {
 	toProcess := map[string]any{
 		"chunks": chunks,
 	}
 	bytes, err := json.Marshal(toProcess)
 	if err != nil {
-		logger.Error().Err(err).Msg("failed to marshal chunks")
+		i.logger.Error().Err(err).Msg("failed to marshal chunks")
 		return fmt.Errorf("failed to marshal chunks: %w", err)
 	}
-	_, _ = fmt.Fprintln(stdin, string(bytes))
 
-	// fixme we need to do this properly, this is supposed to be a daemon, we should not give the chunks
-	//   we should probably create a daemon struct with methods like "start", "stop", "processChunk", etc.
-	time.Sleep(5 * time.Second)
+	i.pendingChunks.Add(1)
+	_, err = fmt.Fprintln(i.stdin, string(bytes))
+	if err != nil {
+		i.pendingChunks.Add(-1)
+		i.logger.Error().Err(err).Msg("failed to write chunks to stdin")
+		return fmt.Errorf("failed to write chunks to stdin: %w", err)
+	}
 
-	// fixme: again, do this properly!
-	_ = stdin.Close()
-
-	log.Info().Msg("Indexer completed successfully")
 	return nil
+}
+
+func (i *RunningIndexer) WaitForCompletion() {
+	i.logger.Debug().Msg("wait for completion of indexer")
+	if i.pendingChunks.Load() == 0 {
+		return
+	}
+
+	select {
+	case <-i.ctx.Done():
+	case <-i.completionCh:
+	}
+
+	return
+}
+
+func (i *RunningIndexer) Close() error {
+	i.logger.Debug().Msg("close indexer")
+	var errs []error
+
+	if err := i.stdin.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("failed to close stdin: %w", err))
+	}
+	if err := i.command.Process.Kill(); err != nil {
+		errs = append(errs, fmt.Errorf("failed to kill process: %w", err))
+	}
+	if err := i.stdout.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("failed to close stdin: %w", err))
+	}
+	if err := i.stderr.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("failed to close stdin: %w", err))
+	}
+
+	return errors.Join(errs...)
+}
+
+func (i *RunningIndexer) WaitAndClose() error {
+	i.WaitForCompletion()
+	return i.Close()
+}
+
+func buildOptions(opts ...IndexerOption) *IndexerOptions {
+	options := &IndexerOptions{
+		WorkingDirectory: "$HOME/.mm",
+	}
+	for _, opt := range opts {
+		opt(options)
+	}
+	return options
 }
 
 func prepareWorkingDirectoryIfNeeded(ctx context.Context, wd string) error {
@@ -131,7 +325,7 @@ func prepareWorkingDirectoryIfNeeded(ctx context.Context, wd string) error {
 	pyprojectTomlPath := filepath.Join(wd, libDirectoryName, "pyproject.toml")
 	if requiresUpdate(pythonScriptPath, computeChecksum(pythonScript)) ||
 		requiresUpdate(pyprojectTomlPath, computeChecksum(pyprojectToml)) {
-		log.Debug().Msg("updating python script")
+		logger.Debug().Msg("updating python script")
 
 		err = os.WriteFile(pythonScriptPath, pythonScript, 0644)
 		if err != nil {
