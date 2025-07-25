@@ -10,6 +10,7 @@ type (
 	Factory[P any] func(ctx context.Context, workerIdx int) (Worker[P], error)
 
 	Worker[P any] interface {
+		WaitReady(ctx context.Context) error
 		Handle(ctx context.Context, param P) error
 		WaitAndClose() error
 	}
@@ -27,13 +28,14 @@ func NewGroup[P any](ctx context.Context, nbWorkers int, factory Factory[P]) (*G
 	work := make(chan P)
 	workers := make([]Worker[P], nbWorkers)
 	for i := 0; i < nbWorkers; i++ {
-		worker, err := factory(ctx, i)
-		if err != nil {
-			return nil, err
-		}
-		workers[i] = worker
-
 		go func() {
+			worker, err := factory(ctx, i)
+			if err != nil {
+				logger.Error().Err(err).Msgf("failed to create worker %d", i)
+				return
+			}
+			workers[i] = worker
+
 			for {
 				select {
 				case <-ctx.Done():
@@ -56,6 +58,21 @@ func NewGroup[P any](ctx context.Context, nbWorkers int, factory Factory[P]) (*G
 		work:    work,
 		workers: workers,
 	}, nil
+}
+
+func (p Group[P]) WaitAllWorkersToBeReady(ctx context.Context) error {
+	var wg sync.WaitGroup
+	for _, worker := range p.workers {
+		wg.Add(1)
+		go func(w Worker[P]) {
+			defer wg.Done()
+			if err := w.WaitReady(ctx); err != nil {
+				zerolog.Ctx(p.ctx).Error().Err(err).Msg("worker failed to be ready")
+			}
+		}(worker)
+	}
+	wg.Wait()
+	return nil
 }
 
 func (g Group[P]) Submit(s P) error {

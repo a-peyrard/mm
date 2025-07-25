@@ -36,7 +36,7 @@ var mmCmd = &cobra.Command{
 		ctx := logger.WithContext(cmd.Context())
 
 		if index {
-			workerGroup, err := worker.NewGroup(ctx, 4, NewIndexerWorker)
+			workerGroup, err := worker.NewGroup(ctx, 12, NewIndexerWorker)
 			if err != nil {
 				return fmt.Errorf("failed to create worker group: %w", err)
 			}
@@ -82,6 +82,11 @@ func NewIndexerWorker(ctx context.Context, workerIdx int) (worker.Worker[string]
 	}()
 
 	return &indexerWorker{indexer}, nil
+}
+
+func (i *indexerWorker) WaitReady(ctx context.Context) error {
+	//TODO implement me
+	panic("implement me")
 }
 
 func (i *indexerWorker) Handle(_ context.Context, filePath string) error {
