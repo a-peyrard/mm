@@ -13,4 +13,14 @@ dependencies = [
 dev = [
     "pytest>=8.4.1",
     "pytest-describe>=2.2.0",
+    "pytest-env>=1.1.5",
 ]
+
+# tests ---------------------------------------------------
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+[tool.pytest_env]
+TOKENIZERS_PARALLELISM = "false"

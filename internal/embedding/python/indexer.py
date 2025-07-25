@@ -2,30 +2,33 @@
 import argparse
 import json
 import sys
+import uuid
 from typing import Dict, List, Any
 
 import chromadb
 from sentence_transformers import SentenceTransformer
 
 def process_request(req: str, model: SentenceTransformer, db_path: str) -> Dict[str, Any]:
+    req_id = str(uuid.uuid4())
     try:
         input_data = json.loads(req)
+        req_id = input_data.get("meta", {}).get("id", req_id)
         chunks = input_data.get("chunks", [])
 
         if chunks:
-            result = index_chunks(chunks, model, db_path)
+            result = index_chunks(req_id, chunks, model, db_path)
         else:
-            result = {"status": "error", "message": "No chunks provided"}
+            result = {"id": req_id, "status": "error", "message": "No chunks provided"}
 
     except json.JSONDecodeError as e:
-        result = {"status": "error", "message": f"Invalid JSON: {str(e)}"}
+        result = {"id": req_id, "status": "error", "message": f"Invalid JSON: {str(e)}"}
     except Exception as e:
-        result = {"status": "error", "message": str(e)}
+        result = {"id": req_id, "status": "error", "message": str(e)}
 
     return result
 
 
-def index_chunks(chunks: List[Dict[str, str]], model: SentenceTransformer, db_path: str):
+def index_chunks(req_id: str, chunks: List[Dict[str, str]], model: SentenceTransformer, db_path: str):
     client = chromadb.PersistentClient(path=db_path)
 
     collection = client.get_or_create_collection(
@@ -50,11 +53,10 @@ def index_chunks(chunks: List[Dict[str, str]], model: SentenceTransformer, db_pa
         metadatas=metadata_list,
     )
 
-    return {"status": "success", "indexed_count": len(chunks)}
+    return {"id": req_id, "status": "success", "indexed_count": len(chunks)}
 
 
 def main():
-    print("Starting indexer...")
     parser = argparse.ArgumentParser(description="Index code chunks in ChromaDB")
     parser.add_argument(
         "--db-path",
@@ -65,6 +67,9 @@ def main():
 
     model_name = "all-MiniLM-L6-v2"
     model = SentenceTransformer(model_name)
+
+    print(json.dumps({"status": "READY"}))
+    sys.stdout.flush()
 
     while True:
         line = sys.stdin.readline()

@@ -1,0 +1,7 @@
+pre-commit:
+  parallel: true
+  commands:
+    test-go:
+      run: just test-go
+    test-python-fast:
+      run: just test-python-fast

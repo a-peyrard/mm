@@ -612,6 +612,7 @@ dependencies = [
 dev = [
     { name = "pytest" },
     { name = "pytest-describe" },
+    { name = "pytest-env" },
 ]
 
 [package.metadata]
@@ -624,6 +625,7 @@ requires-dist = [
 dev = [
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "pytest-describe", specifier = ">=2.2.0" },
+    { name = "pytest-env", specifier = ">=1.1.5" },
 ]
 
 [[package]]
@@ -1210,6 +1212,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/61/58/4079baf5a7937159aa59b2f696f8d61c55a6ae4df87bd9ed49e7e130df21/pytest-describe-2.2.0.tar.gz", hash = "sha256:39bb05eb90f2497d9ca342ef9a0b7fa5bada7e58505aec33f66d661d631955b7", size = 10907, upload-time = "2024-02-10T15:30:35.224Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5d/95/2990d6e3e777be36690700b524d7daf44c9562158d1af6a8f85a6236f22c/pytest_describe-2.2.0-py3-none-any.whl", hash = "sha256:bd9e2c73acb4b9522a8400823d98f5b6a081667d3bfd7243a8598336896b544d", size = 6940, upload-time = "2024-02-10T15:30:33.451Z" },
+]
+
+[[package]]
+name = "pytest-env"
+version = "1.1.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1f/31/27f28431a16b83cab7a636dce59cf397517807d247caa38ee67d65e71ef8/pytest_env-1.1.5.tar.gz", hash = "sha256:91209840aa0e43385073ac464a554ad2947cc2fd663a9debf88d03b01e0cc1cf", size = 8911, upload-time = "2024-09-17T22:39:18.566Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/de/b8/87cfb16045c9d4092cfcf526135d73b88101aac83bc1adcf82dfb5fd3833/pytest_env-1.1.5-py3-none-any.whl", hash = "sha256:ce90cf8772878515c24b31cd97c7fa1f4481cd68d588419fd45f10ecaee6bc30", size = 6141, upload-time = "2024-09-17T22:39:16.942Z" },
 ]
 
 [[package]]
