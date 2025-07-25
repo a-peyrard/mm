@@ -26,7 +26,6 @@ def process_request(req: str, model: SentenceTransformer, db_path: str) -> Dict[
 
 
 def index_chunks(chunks: List[Dict[str, str]], model: SentenceTransformer, db_path: str):
-    print("DB PATH: ", db_path)
     client = chromadb.PersistentClient(path=db_path)
 
     collection = client.get_or_create_collection(
@@ -63,8 +62,6 @@ def main():
         help="Path to ChromaDB database (default: ./chroma_db)"
     )
     args = parser.parse_args()
-
-    print("db path: ", args.db_path)
 
     model_name = "all-MiniLM-L6-v2"
     model = SentenceTransformer(model_name)

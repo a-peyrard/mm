@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/a-peyrard/mm/internal/code"
 	"github.com/a-peyrard/mm/internal/embedding"
+	"github.com/a-peyrard/mm/internal/set"
 	"io"
 	"os"
 	"time"
@@ -33,21 +34,14 @@ var mmCmd = &cobra.Command{
 		ctx := logger.WithContext(cmd.Context())
 
 		if index {
-			filePath := args[0]
-			content, err := os.ReadFile(filePath)
-			if err != nil {
-				return fmt.Errorf("failed to read file %s: %w", filePath, err)
-			}
-
-			chunks, err := code.NewGenericParser().ParseFile(filePath, content)
-			if err != nil {
-				return fmt.Errorf("failed to parse file %s: %w", filePath, err)
-			}
-
+			// create the embedding indexer
 			indexer, err := embedding.RunIndexer(ctx)
 			if err != nil {
 				return fmt.Errorf("failed to run indexer: %w", err)
 			}
+			//goland:noinspection GoUnhandledErrorResult
+			defer indexer.Close()
+
 			go func() {
 				logger := logger.With().Str("process", "python indexer").Logger()
 				for out := range indexer.Output() {
@@ -55,15 +49,36 @@ var mmCmd = &cobra.Command{
 				}
 			}()
 
-			err = indexer.ProcessChunk(chunks)
+			// look for Python files in the provided directory
+			path := args[0]
+			err = code.FindInDirectory(
+				path,
+				set.Of(".py"),
+				func(filePath string) error {
+					log.Debug().Str("path", filePath).Msg("Processing file")
+					content, err := os.ReadFile(filePath)
+					if err != nil {
+						return fmt.Errorf("failed to read file %s: %w", filePath, err)
+					}
+
+					chunks, err := code.NewGenericParser().ParseFile(filePath, content)
+					if err != nil {
+						return fmt.Errorf("failed to parse file %s: %w", filePath, err)
+					}
+
+					err = indexer.ProcessChunk(chunks)
+					if err != nil {
+						return fmt.Errorf("failed to process chunk: %w", err)
+					}
+
+					return nil
+				},
+			)
 			if err != nil {
-				return fmt.Errorf("failed to process chunk: %w", err)
+				return fmt.Errorf("failed to find files in directory %s: %w", path, err)
 			}
 
-			err = indexer.WaitAndClose()
-			if err != nil {
-				return fmt.Errorf("failed to wait for indexer completion: %w", err)
-			}
+			indexer.WaitForCompletion()
 		}
 
 		return nil

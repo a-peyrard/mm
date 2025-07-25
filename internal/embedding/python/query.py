@@ -5,10 +5,6 @@ import chromadb
 
 THRESHOLD = 1.3
 
-client = chromadb.PersistentClient(path="/Users/augustin/.mm/chroma")
-
-collection = client.get_or_create_collection("code_chunks")
-
 if len(sys.argv) < 2:
     print("Usage: python query.py <query>")
     print("Example: python query.py 'where is foobar?'")
@@ -16,6 +12,12 @@ if len(sys.argv) < 2:
 
 query = " ".join(sys.argv[1:])  # Join all arguments with spaces
 print(f"Searching for: '{query}'")
+
+client = chromadb.PersistentClient(path="/Users/augustin/.mm/chroma")
+collection = client.get_or_create_collection("code_chunks")
+
+total_docs = collection.count()
+print(f"Total documents in collection: {total_docs}")
 
 # Query
 # Get more results than you need
