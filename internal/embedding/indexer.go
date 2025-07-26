@@ -81,7 +81,8 @@ func RunIndexer(ctx context.Context, opts ...IndexerOption) (*RunningIndexer, er
 		"python",
 		"indexer.py",
 	}
-	cmdTokens = append(cmdTokens, buildIndexerCmdArgs(wd)...)
+	// fixme: we will need to pass the db path to the chroma server, and run it somewhere else
+	// cmdTokens = append(cmdTokens, buildIndexerCmdArgs(wd)...)
 
 	cmd := exec.CommandContext(ctx, "uv", cmdTokens...)
 	cmd.Dir = filepath.Join(wd, libDirectoryName)

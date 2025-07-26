@@ -8,7 +8,6 @@ import (
 	"github.com/a-peyrard/mm/internal/embedding"
 	"github.com/a-peyrard/mm/internal/set"
 	"github.com/a-peyrard/mm/internal/worker"
-	"io"
 	"os"
 	"time"
 
@@ -23,6 +22,7 @@ var (
 )
 
 const defaultNumberOfWorkers = 2
+const defaultLogLevel = zerolog.DebugLevel
 
 var mmCmd = &cobra.Command{
 	Use:   "mm --index [file ...]",
@@ -38,8 +38,7 @@ var mmCmd = &cobra.Command{
 			return handleCompletion(cmd, shell)
 		}
 
-		var writer io.Writer = zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}
-		logger := zerolog.New(writer).
+		logger := log.Logger.
 			With().
 			Timestamp().
 			Caller().
@@ -181,9 +180,26 @@ func handleCompletion(cmd *cobra.Command, shell string) error {
 	}
 }
 
-func main() {
-	zerolog.SetGlobalLevel(zerolog.DebugLevel)
+func getLogLevel() zerolog.Level {
+	return getLogLevelFromEnv("LOG_LEVEL", defaultLogLevel)
+}
 
+func getLogLevelFromEnv(envName string, fallbackLevel zerolog.Level) zerolog.Level {
+	env := os.Getenv(envName)
+	if env == "" {
+		return fallbackLevel
+	}
+	level, err := zerolog.ParseLevel(env)
+	if err != nil {
+		fmt.Printf("Unable to parse log level from environment variable %s: '%s': %v\n", envName, env, err)
+		level = fallbackLevel
+	}
+
+	return level
+}
+
+func main() {
+	zerolog.SetGlobalLevel(getLogLevel())
 	log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).
 		Level(zerolog.TraceLevel).
 		With().
