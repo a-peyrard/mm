@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"github.com/rs/zerolog"
+	"log"
 	"sync"
 )
 
@@ -19,6 +20,8 @@ type (
 		ctx     context.Context
 		work    chan P
 		workers []Worker[P]
+
+		workersInProgress *sync.WaitGroup
 	}
 )
 
@@ -27,14 +30,22 @@ func NewGroup[P any](ctx context.Context, nbWorkers int, factory Factory[P]) (*G
 
 	work := make(chan P)
 	workers := make([]Worker[P], nbWorkers)
+	workersInCreation := sync.WaitGroup{}
+	workersInProgress := sync.WaitGroup{}
 	for i := 0; i < nbWorkers; i++ {
-		go func() {
+		workersInCreation.Add(1)
+		workersInProgress.Add(1)
+		go func(i int) {
+			defer workersInProgress.Done()
+
 			worker, err := factory(ctx, i)
 			if err != nil {
 				logger.Error().Err(err).Msgf("failed to create worker %d", i)
 				return
 			}
 			workers[i] = worker
+
+			workersInCreation.Done()
 
 			for {
 				select {
@@ -50,13 +61,17 @@ func NewGroup[P any](ctx context.Context, nbWorkers int, factory Factory[P]) (*G
 					}
 				}
 			}
-		}()
+		}(i)
 	}
 
+	// wait for all workers to be created before returning the group
+	workersInCreation.Wait()
+
 	return &Group[P]{
-		ctx:     ctx,
-		work:    work,
-		workers: workers,
+		ctx:               ctx,
+		work:              work,
+		workers:           workers,
+		workersInProgress: &workersInProgress,
 	}, nil
 }
 
@@ -66,11 +81,19 @@ func (p Group[P]) WaitAllWorkersToBeReady(ctx context.Context) error {
 		wg.Add(1)
 		go func(w Worker[P]) {
 			defer wg.Done()
-			if err := w.WaitReady(ctx); err != nil {
+
+			if w == nil {
+				zerolog.Ctx(p.ctx).Error().Msg("worker is nil")
+				log.Printf("workers: %v\n", p.workers)
+				return
+			}
+			err := w.WaitReady(ctx)
+			if err != nil {
 				zerolog.Ctx(p.ctx).Error().Err(err).Msg("worker failed to be ready")
 			}
 		}(worker)
 	}
+
 	wg.Wait()
 	return nil
 }
@@ -86,19 +109,20 @@ func (g Group[P]) Submit(s P) error {
 
 func (g Group[P]) WaitAndClose() error {
 	close(g.work)
+	g.workersInProgress.Wait()
 
-	wg := sync.WaitGroup{}
+	closingWg := sync.WaitGroup{}
 	for _, worker := range g.workers {
-		wg.Add(1)
+		closingWg.Add(1)
 		go func(w Worker[P]) {
-			defer wg.Done()
+			defer closingWg.Done()
 			if err := w.WaitAndClose(); err != nil {
 				zerolog.Ctx(g.ctx).Error().Err(err).Msg("worker failed to close")
 			}
 		}(worker)
 	}
 
-	wg.Wait()
+	closingWg.Wait()
 
 	return nil
 }

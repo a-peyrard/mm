@@ -18,8 +18,11 @@ import (
 )
 
 var (
-	index bool
+	index           bool
+	numberOfWorkers int
 )
+
+const defaultNumberOfWorkers = 2
 
 var mmCmd = &cobra.Command{
 	Use:   "mm --index [file ...]",
@@ -27,6 +30,14 @@ var mmCmd = &cobra.Command{
 	Long:  `My Memory CLI tool`,
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 && args[0] == "completion" {
+			shell := "zsh"
+			if len(args) > 1 {
+				shell = args[1]
+			}
+			return handleCompletion(cmd, shell)
+		}
+
 		var writer io.Writer = zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}
 		logger := zerolog.New(writer).
 			With().
@@ -36,23 +47,42 @@ var mmCmd = &cobra.Command{
 		ctx := logger.WithContext(cmd.Context())
 
 		if index {
-			workerGroup, err := worker.NewGroup(ctx, 12, NewIndexerWorker)
+			logger.Info().Int("numberOfWorkers", numberOfWorkers).Msg("Initializing indexer daemons...")
+			start := time.Now()
+			workerGroup, err := worker.NewGroup(ctx, numberOfWorkers, NewIndexerWorker)
 			if err != nil {
 				return fmt.Errorf("failed to create worker group: %w", err)
 			}
+			_ = workerGroup.WaitAllWorkersToBeReady(ctx)
+			end := time.Now()
+			logger.Info().
+				Str("elapsed", fmt.Sprintf("%dms", end.Sub(start).Milliseconds())).
+				Int("numberOfWorkers", numberOfWorkers).
+				Msg("daemons ready")
 
 			// look for Python files in the provided directory
+			start = time.Now()
+			counter := 0
 			path := args[0]
 			err = code.FindInDirectory(
 				path,
 				set.Of(".py"),
-				workerGroup.Submit,
+				func(path string) error {
+					counter++
+					return workerGroup.Submit(path)
+				},
 			)
 			if err != nil {
 				return fmt.Errorf("failed to find files in directory %s: %w", path, err)
 			}
 
 			_ = workerGroup.WaitAndClose()
+			end = time.Now()
+
+			logger.Info().
+				Str("elapsed", fmt.Sprintf("%dms", end.Sub(start).Milliseconds())).
+				Int("filesProcessed", counter).
+				Msg("Indexing completed")
 		}
 
 		return nil
@@ -77,19 +107,18 @@ func NewIndexerWorker(ctx context.Context, workerIdx int) (worker.Worker[string]
 	}
 	go func() {
 		for out := range indexer.Output() {
-			logger.Debug().Msg(out)
+			logger.Trace().Msg(out)
 		}
 	}()
 
 	return &indexerWorker{indexer}, nil
 }
 
-func (i *indexerWorker) WaitReady(ctx context.Context) error {
-	//TODO implement me
-	panic("implement me")
+func (w *indexerWorker) WaitReady(ctx context.Context) error {
+	return w.indexer.WaitReady()
 }
 
-func (i *indexerWorker) Handle(_ context.Context, filePath string) error {
+func (w *indexerWorker) Handle(_ context.Context, filePath string) error {
 	log.Debug().Str("path", filePath).Msg("Processing file")
 	content, err := os.ReadFile(filePath)
 	if err != nil {
@@ -101,17 +130,18 @@ func (i *indexerWorker) Handle(_ context.Context, filePath string) error {
 		return fmt.Errorf("failed to parse file %s: %w", filePath, err)
 	}
 	if len(chunks) > 0 {
-		err = i.indexer.ProcessChunk(chunks)
+		err = w.indexer.ProcessChunk(chunks)
 		if err != nil {
 			return fmt.Errorf("failed to process chunk: %w", err)
 		}
+		w.indexer.WaitForCompletion()
 	}
 
 	return nil
 }
 
-func (i *indexerWorker) WaitAndClose() error {
-	return i.indexer.WaitAndClose()
+func (w *indexerWorker) WaitAndClose() error {
+	return w.indexer.Close()
 }
 
 func init() {
@@ -121,6 +151,34 @@ func init() {
 		false,
 		"If we should run in index mode (otherwise will run in consume mode)",
 	)
+
+	mmCmd.Flags().IntVarP(
+		&numberOfWorkers,
+		"number-of-workers",
+		"n",
+		defaultNumberOfWorkers,
+		fmt.Sprintf("Number of workers to use for indexing (default is %d)", defaultNumberOfWorkers),
+	)
+
+	mmCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+		if cmd.Flags().Changed("number-of-workers") && !index {
+			return fmt.Errorf("--number-of-workers can only be used with --index")
+		}
+		return nil
+	}
+}
+
+func handleCompletion(cmd *cobra.Command, shell string) error {
+	switch shell {
+	case "bash":
+		return cmd.GenBashCompletion(os.Stdout)
+	case "zsh":
+		return cmd.GenZshCompletion(os.Stdout)
+	case "fish":
+		return cmd.GenFishCompletion(os.Stdout, true)
+	default:
+		return cmd.Help()
+	}
 }
 
 func main() {

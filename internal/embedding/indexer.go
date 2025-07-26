@@ -53,6 +53,8 @@ type (
 		completionCh chan struct{}
 
 		pendingChunks *atomic.Int32
+
+		ready *sync.WaitGroup
 	}
 )
 
@@ -105,7 +107,7 @@ func RunIndexer(ctx context.Context, opts ...IndexerOption) (*RunningIndexer, er
 
 	runningIndexer := initRunningIndexer(ctx, cmd, stdin, stdout, stderr)
 
-	logger.Info().Msg("running indexer sub-process")
+	logger.Trace().Msg("running indexer sub-process")
 	if err := cmd.Start(); err != nil {
 		_ = runningIndexer.Close()
 		return nil, fmt.Errorf("indexer failed: %w", err)
@@ -121,6 +123,8 @@ func initRunningIndexer(ctx context.Context, cmd *exec.Cmd, stdin io.WriteCloser
 
 	completionCh := make(chan struct{})
 
+	ready := sync.WaitGroup{}
+	ready.Add(1)
 	pendingChunks := atomic.Int32{}
 	outWrapped := make(chan string)
 	go func() {
@@ -146,6 +150,10 @@ func initRunningIndexer(ctx context.Context, cmd *exec.Cmd, stdin io.WriteCloser
 
 				if !strings.Contains(line, "status") {
 					continue
+				}
+
+				if strings.Contains(line, "READY") {
+					ready.Done()
 				}
 
 				val := pendingChunks.Add(-1)
@@ -179,6 +187,8 @@ func initRunningIndexer(ctx context.Context, cmd *exec.Cmd, stdin io.WriteCloser
 		completionCh: completionCh,
 
 		pendingChunks: &pendingChunks,
+
+		ready: &ready,
 	}
 }
 
@@ -227,6 +237,12 @@ func captureOutput(ctx context.Context, stdout io.ReadCloser, stderr io.ReadClos
 	return out
 }
 
+func (i *RunningIndexer) WaitReady() error {
+	i.ready.Wait()
+
+	return nil
+}
+
 func (i *RunningIndexer) Output() <-chan string {
 	return i.out
 }
@@ -253,7 +269,7 @@ func (i *RunningIndexer) ProcessChunk(chunks []code.Chunk) error {
 }
 
 func (i *RunningIndexer) WaitForCompletion() {
-	i.logger.Debug().Msg("wait for completion of indexer")
+	i.logger.Trace().Msg("wait for completion of indexer")
 	if i.pendingChunks.Load() == 0 {
 		return
 	}
@@ -267,7 +283,7 @@ func (i *RunningIndexer) WaitForCompletion() {
 }
 
 func (i *RunningIndexer) Close() error {
-	i.logger.Debug().Msg("close indexer")
+	i.logger.Trace().Msg("close indexer")
 	var errs []error
 
 	if err := i.stdin.Close(); err != nil {
